@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/gosuri/uitable"
 )
 
 var states = []string{
@@ -118,11 +120,19 @@ func main() {
 	}
 	defer file.Close()
 
+	table := uitable.New()
+	table.AddRow("Proto", "Local Address", "Foreign Address", "State", "User", "PID/Program name")
+
 	scanner := bufio.NewScanner(file)
 	scanner.Scan() // skip headline
+	if err := scanner.Err(); err != nil {
+		log.Fatal(err)
+	}
 
-	fmt.Println("TCP")
 	for scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			log.Fatal(err)
+		}
 		line := scanner.Text()
 		fields := strings.Fields(line)
 
@@ -140,12 +150,7 @@ func main() {
 		inode := fields[9]
 		pid := findPid(inode)
 
-		fmt.Printf("%s:%s -> %s:%s %s %s %s\n", localAddress, localPort, remoteAddress, remotePort, state, uid, pid)
+		table.AddRow("tcp", localAddress+":"+localPort, remoteAddress+":"+remotePort, state, uid, pid)
 	}
-
-	if err := scanner.Err(); err != nil {
-		log.Fatal(err)
-	}
+	fmt.Println(table)
 }
-
-// cat /proc/net/tcp | grep -e "^\s*[[:digit:]]*:" | sed 's/^\s*[[:digit:]]*:\s*[^:]*:\([^ ]*\).*$/0x\1/' | xargs printf "%d\n"
