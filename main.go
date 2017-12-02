@@ -113,6 +113,26 @@ func findPid(inode string) string {
 	return "-"
 }
 
+func createUidUsernameMapping() map[string]string {
+	file, err := os.Open("/etc/passwd")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+
+	uidUsernameMapping := map[string]string{}
+	for scanner.Scan() {
+		line := scanner.Text()
+		lineSplitted := strings.Split(line, ":")
+		username := lineSplitted[0]
+		uid := lineSplitted[2]
+		uidUsernameMapping[uid] = username
+	}
+	return uidUsernameMapping
+}
+
 func main() {
 	file, err := os.Open("/proc/net/tcp")
 	if err != nil {
@@ -121,7 +141,7 @@ func main() {
 	defer file.Close()
 
 	table := uitable.New()
-	table.AddRow("Proto", "Local Address", "Foreign Address", "State", "User", "PID/Program name")
+	table.AddRow("Proto", "Local Address", "Foreign Address", "State", "UID/Username", "PID/Programname")
 
 	scanner := bufio.NewScanner(file)
 	scanner.Scan() // skip headline
@@ -150,7 +170,13 @@ func main() {
 		inode := fields[9]
 		pid := findPid(inode)
 
-		table.AddRow("tcp", localAddress+":"+localPort, remoteAddress+":"+remotePort, state, uid, pid)
+		uidUsernameMapping := createUidUsernameMapping()
+		username := uidUsernameMapping[uid]
+		if username == "" {
+			username = "-"
+		}
+
+		table.AddRow("tcp", localAddress+":"+localPort, remoteAddress+":"+remotePort, state, uid+"/"+username, pid)
 	}
 	fmt.Println(table)
 }
