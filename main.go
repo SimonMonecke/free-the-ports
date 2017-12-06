@@ -80,10 +80,7 @@ func findPid(inode string) string {
 		log.Fatal(err)
 	}
 	files[0].IsDir()
-	processDirRegexp, err := regexp.Compile(`\d*`)
-	if err != nil {
-		log.Fatal(err)
-	}
+	processDirRegexp := regexp.MustCompile(`\d*`)
 
 	processDirs := files[:0]
 	for _, file := range files {
@@ -146,6 +143,8 @@ func scanProcFile(proto string, pidList *[]string, table *uitable.Table) {
 		log.Fatal(err)
 	}
 
+	udpRegexp := regexp.MustCompile(`udp.*`)
+
 	for scanner.Scan() {
 		if err := scanner.Err(); err != nil {
 			log.Fatal(err)
@@ -161,7 +160,12 @@ func scanProcFile(proto string, pidList *[]string, table *uitable.Table) {
 		remoteAddress := convertAddress(remoteAddressAndPortHex[0])
 		remotePort := convertPort(remoteAddressAndPortHex[1])
 
-		state := convertState(fields[3])
+		var state string
+		if udpRegexp.MatchString(proto) {
+			state = ""
+		} else {
+			state = convertState(fields[3])
+		}
 
 		uid := fields[7]
 		inode := fields[9]
@@ -171,7 +175,7 @@ func scanProcFile(proto string, pidList *[]string, table *uitable.Table) {
 		uidUsernameMapping := createUidUsernameMapping()
 		username := uidUsernameMapping[uid]
 		if username == "" {
-			username = "-"
+			panic("unknown uid: " + uid)
 		}
 
 		table.AddRow(len(*pidList), proto, localAddress+":"+localPort, remoteAddress+":"+remotePort, state, uid+"/"+username, pid)
