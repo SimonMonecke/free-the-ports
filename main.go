@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"net"
 	"os"
 	"regexp"
 	"strconv"
@@ -27,7 +28,7 @@ var states = []string{
 	"CLOSING",
 }
 
-func convertAddress(addressHex string) string {
+func convertAddressIpV4(addressHex string) string {
 	addressDecPartOne, err := strconv.ParseInt(addressHex[0:1], 16, 0)
 	if err != nil {
 		log.Fatal(err)
@@ -130,6 +131,22 @@ func createUidUsernameMapping() map[string]string {
 	return uidUsernameMapping
 }
 
+func convertAddressIpV6(addressHex string) string {
+	var result []string
+	for i := 0; i < 4; i++ {
+		addressPart := addressHex[i*8 : (i+1)*8]
+		var subresult string
+		for j := 0; j < 4; j++ {
+			subresult = subresult + addressPart[6-j*2:8-j*2]
+			if j == 1 {
+				subresult = subresult + ":"
+			}
+		}
+		result = append(result, subresult)
+	}
+	return "[" + net.ParseIP(strings.Join(result, ":")).String() + "]"
+}
+
 func scanProcFile(proto string, pidList *[]string, table *uitable.Table) {
 	file, err := os.Open("/proc/net/" + proto)
 	if err != nil {
@@ -144,6 +161,7 @@ func scanProcFile(proto string, pidList *[]string, table *uitable.Table) {
 	}
 
 	udpRegexp := regexp.MustCompile(`udp.*`)
+	ipV6Regexp := regexp.MustCompile(`.*6`)
 
 	for scanner.Scan() {
 		if err := scanner.Err(); err != nil {
@@ -153,16 +171,26 @@ func scanProcFile(proto string, pidList *[]string, table *uitable.Table) {
 		fields := strings.Fields(line)
 
 		localAddressAndPortHex := strings.Split(fields[1], ":")
-		localAddress := convertAddress(localAddressAndPortHex[0])
+		var localAddress string
+		if ipV6Regexp.MatchString(proto) {
+			localAddress = convertAddressIpV6(localAddressAndPortHex[0])
+		} else {
+			localAddress = convertAddressIpV4(localAddressAndPortHex[0])
+		}
 		localPort := convertPort(localAddressAndPortHex[1])
 
 		remoteAddressAndPortHex := strings.Split(fields[2], ":")
-		remoteAddress := convertAddress(remoteAddressAndPortHex[0])
+		var remoteAddress string
+		if ipV6Regexp.MatchString(proto) {
+			remoteAddress = convertAddressIpV6(remoteAddressAndPortHex[0])
+		} else {
+			remoteAddress = convertAddressIpV4(remoteAddressAndPortHex[0])
+		}
 		remotePort := convertPort(remoteAddressAndPortHex[1])
 
 		var state string
 		if udpRegexp.MatchString(proto) {
-			state = ""
+			state = "-"
 		} else {
 			state = convertState(fields[3])
 		}
@@ -187,6 +215,8 @@ func main() {
 	table.AddRow("#", "Proto", "Local Address", "Foreign Address", "State", "UID/Username", "PID/Programname")
 	pidList := []string{}
 	scanProcFile("tcp", &pidList, table)
+	scanProcFile("tcp6", &pidList, table)
 	scanProcFile("udp", &pidList, table)
+	scanProcFile("udp6", &pidList, table)
 	fmt.Println(table)
 }
