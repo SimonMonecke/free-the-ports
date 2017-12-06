@@ -133,15 +133,12 @@ func createUidUsernameMapping() map[string]string {
 	return uidUsernameMapping
 }
 
-func main() {
-	file, err := os.Open("/proc/net/tcp")
+func scanProcFile(proto string, pidList *[]string, table *uitable.Table) {
+	file, err := os.Open("/proc/net/" + proto)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer file.Close()
-
-	table := uitable.New()
-	table.AddRow("Proto", "Local Address", "Foreign Address", "State", "UID/Username", "PID/Programname")
 
 	scanner := bufio.NewScanner(file)
 	scanner.Scan() // skip headline
@@ -169,6 +166,7 @@ func main() {
 		uid := fields[7]
 		inode := fields[9]
 		pid := findPid(inode)
+		*pidList = append(*pidList, pid)
 
 		uidUsernameMapping := createUidUsernameMapping()
 		username := uidUsernameMapping[uid]
@@ -176,7 +174,15 @@ func main() {
 			username = "-"
 		}
 
-		table.AddRow("tcp", localAddress+":"+localPort, remoteAddress+":"+remotePort, state, uid+"/"+username, pid)
+		table.AddRow(len(*pidList), proto, localAddress+":"+localPort, remoteAddress+":"+remotePort, state, uid+"/"+username, pid)
 	}
+}
+
+func main() {
+	table := uitable.New()
+	table.AddRow("#", "Proto", "Local Address", "Foreign Address", "State", "UID/Username", "PID/Programname")
+	pidList := []string{}
+	scanProcFile("tcp", &pidList, table)
+	scanProcFile("udp", &pidList, table)
 	fmt.Println(table)
 }
