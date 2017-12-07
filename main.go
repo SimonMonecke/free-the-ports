@@ -83,11 +83,10 @@ func convertState(stateHex string) string {
 
 func findPidsAndProgramnames(rows []row) map[string]string {
 	procDir := "/proc"
-	linkDests := []string{}
+	inodes := map[string]bool{}
 	for _, r := range rows {
-		linkDests = append(linkDests, `(socket:\[`+r.inode+`\])`)
+		inodes[r.inode] = true
 	}
-	linkDestRegexp := regexp.MustCompile(strings.Join(linkDests, "|"))
 	inodePidProgramnameMapping := map[string]string{}
 	inodeRegexp := regexp.MustCompile(`socket:\[([^\]]*)\]`)
 
@@ -106,23 +105,28 @@ func findPidsAndProgramnames(rows []row) map[string]string {
 	}
 
 	for _, dir := range processDirs {
+		commFile, err := os.Open(procDir + "/" + dir.Name() + "/comm")
+		if err != nil {
+			continue
+		}
+		defer commFile.Close()
+		scanner := bufio.NewScanner(commFile)
+		scanner.Scan()
+		processName := scanner.Text()
 		links, err := ioutil.ReadDir(procDir + "/" + dir.Name() + "/fd")
-		if err == nil {
-			for _, link := range links {
-				dest, err := os.Readlink(procDir + "/" + dir.Name() + "/fd/" + link.Name())
-				if err == nil && linkDestRegexp.MatchString(dest) {
-					commFile, err := os.Open(procDir + "/" + dir.Name() + "/comm")
-					if err == nil {
-						defer commFile.Close()
-						scanner := bufio.NewScanner(commFile)
-						scanner.Scan()
-						processName := scanner.Text()
-						inode := inodeRegexp.FindStringSubmatch(dest)[1]
-						inodePidProgramnameMapping[inode] = dir.Name() + "/" + string(processName)
-						if len(inodePidProgramnameMapping) == len(rows) {
-							return inodePidProgramnameMapping
-						}
-					}
+		if err != nil {
+			continue
+		}
+		for _, link := range links {
+			dest, err := os.Readlink(procDir + "/" + dir.Name() + "/fd/" + link.Name())
+			if err != nil {
+				continue
+			}
+			inodeRegexpMatches := inodeRegexp.FindStringSubmatch(dest)
+			if len(inodeRegexpMatches) >= 1 && inodes[inodeRegexpMatches[1]] {
+				inodePidProgramnameMapping[inodeRegexpMatches[1]] = dir.Name() + "/" + string(processName)
+				if len(inodePidProgramnameMapping) == len(rows) {
+					return inodePidProgramnameMapping
 				}
 			}
 		}
