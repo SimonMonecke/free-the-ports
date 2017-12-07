@@ -28,6 +28,15 @@ var states = []string{
 	"CLOSING",
 }
 
+type row struct {
+	proto  string
+	local  string
+	remote string
+	state  string
+	uid    string
+	inode  string
+}
+
 func convertAddressIpV4(addressHex string) string {
 	addressDecPartOne, err := strconv.ParseInt(addressHex[0:1], 16, 0)
 	if err != nil {
@@ -72,9 +81,15 @@ func convertState(stateHex string) string {
 	return states[stateDec-1]
 }
 
-func findPid(inode string) string {
+func findPidsAndProgramnames(rows []row) map[string]string {
 	procDir := "/proc"
-	linkDest := "socket:[" + inode + "]"
+	linkDests := []string{}
+	for _, r := range rows {
+		linkDests = append(linkDests, `(socket:\[`+r.inode+`\])`)
+	}
+	linkDestRegexp := regexp.MustCompile(strings.Join(linkDests, "|"))
+	inodePidProgramnameMapping := map[string]string{}
+	inodeRegexp := regexp.MustCompile(`socket:\[([^\]]*)\]`)
 
 	files, err := ioutil.ReadDir(procDir)
 	if err != nil {
@@ -95,20 +110,24 @@ func findPid(inode string) string {
 		if err == nil {
 			for _, link := range links {
 				dest, err := os.Readlink(procDir + "/" + dir.Name() + "/fd/" + link.Name())
-				if err == nil && dest == linkDest {
+				if err == nil && linkDestRegexp.MatchString(dest) {
 					commFile, err := os.Open(procDir + "/" + dir.Name() + "/comm")
 					if err == nil {
 						defer commFile.Close()
 						scanner := bufio.NewScanner(commFile)
 						scanner.Scan()
 						processName := scanner.Text()
-						return dir.Name() + "/" + string(processName)
+						inode := inodeRegexp.FindStringSubmatch(dest)[1]
+						inodePidProgramnameMapping[inode] = dir.Name() + "/" + string(processName)
+						if len(inodePidProgramnameMapping) == len(rows) {
+							return inodePidProgramnameMapping
+						}
 					}
 				}
 			}
 		}
 	}
-	return "-"
+	return inodePidProgramnameMapping
 }
 
 func createUidUsernameMapping() map[string]string {
@@ -147,7 +166,7 @@ func convertAddressIpV6(addressHex string) string {
 	return "[" + net.ParseIP(strings.Join(result, ":")).String() + "]"
 }
 
-func scanProcFile(proto string, pidList *[]string, table *uitable.Table) {
+func scanProcFile(proto string, rows *[]row, table *uitable.Table) {
 	file, err := os.Open("/proc/net/" + proto)
 	if err != nil {
 		log.Fatal(err)
@@ -197,26 +216,41 @@ func scanProcFile(proto string, pidList *[]string, table *uitable.Table) {
 
 		uid := fields[7]
 		inode := fields[9]
-		pid := findPid(inode)
-		*pidList = append(*pidList, pid)
 
-		uidUsernameMapping := createUidUsernameMapping()
-		username := uidUsernameMapping[uid]
-		if username == "" {
-			panic("unknown uid: " + uid)
-		}
-
-		table.AddRow(len(*pidList), proto, localAddress+":"+localPort, remoteAddress+":"+remotePort, state, uid+"/"+username, pid)
+		*rows = append(*rows, row{
+			proto:  proto,
+			local:  localAddress + ":" + localPort,
+			remote: remoteAddress + ":" + remotePort,
+			state:  state,
+			uid:    uid,
+			inode:  inode,
+		})
 	}
 }
 
 func main() {
 	table := uitable.New()
 	table.AddRow("#", "Proto", "Local Address", "Foreign Address", "State", "UID/Username", "PID/Programname")
-	pidList := []string{}
-	scanProcFile("tcp", &pidList, table)
-	scanProcFile("tcp6", &pidList, table)
-	scanProcFile("udp", &pidList, table)
-	scanProcFile("udp6", &pidList, table)
+	rows := []row{}
+	scanProcFile("tcp", &rows, table)
+	scanProcFile("tcp6", &rows, table)
+	scanProcFile("udp", &rows, table)
+	scanProcFile("udp6", &rows, table)
+
+	inodePidProgramnameMapping := findPidsAndProgramnames(rows)
+	uidUsernameMapping := createUidUsernameMapping()
+
+	for i, r := range rows {
+		username := uidUsernameMapping[r.uid]
+		if username == "" {
+			panic("unknown uid: " + r.uid)
+		}
+		pidAndProgramname := inodePidProgramnameMapping[r.inode]
+		if pidAndProgramname == "" {
+			pidAndProgramname = "-"
+		}
+		table.AddRow(i+1, r.proto, r.local, r.remote, r.state, r.uid+"/"+username, pidAndProgramname)
+	}
+
 	fmt.Println(table)
 }
