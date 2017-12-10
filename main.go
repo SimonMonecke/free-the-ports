@@ -5,89 +5,42 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
-	"net"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/gosuri/uitable"
 )
 
-var states = []string{
-	"ESTABLISHED",
-	"SYN_SENT",
-	"SYN_RECV",
-	"FIN_WAIT1",
-	"FIN_WAIT2",
-	"TIME_WAIT",
-	"CLOSE",
-	"CLOSE_WAIT",
-	"LAST_ACK",
-	"LISTEN",
-	"CLOSING",
-}
-
 type row struct {
-	proto  string
-	local  string
-	remote string
-	state  string
-	uid    string
-	inode  string
+	proto string
+	port  int
+	uid   string
+	inode string
 }
 
-func convertAddressIpV4(addressHex string) string {
-	addressDecPartOne, err := strconv.ParseInt(addressHex[0:1], 16, 0)
-	if err != nil {
-		log.Fatal(err)
-	}
-	addressDecPartTwo, err := strconv.ParseInt(addressHex[0:1], 16, 0)
-	if err != nil {
-		log.Fatal(err)
-	}
-	addressDecPartThree, err := strconv.ParseInt(addressHex[0:1], 16, 0)
-	if err != nil {
-		log.Fatal(err)
-	}
-	addressDecPartFour, err := strconv.ParseInt(addressHex[0:1], 16, 0)
-	if err != nil {
-		log.Fatal(err)
-	}
-	return strings.Join([]string{
-		fmt.Sprintf("%d", addressDecPartOne),
-		fmt.Sprintf("%d", addressDecPartTwo),
-		fmt.Sprintf("%d", addressDecPartThree),
-		fmt.Sprintf("%d", addressDecPartFour),
-	}, ".")
+type pidAndProgramName struct {
+	pid         string
+	programName string
 }
 
-func convertPort(portHex string) string {
+func convertPort(portHex string) int {
 	portDec, err := strconv.ParseInt(portHex, 16, 0)
 	if err != nil {
 		log.Fatal(err)
 	}
-	return fmt.Sprintf("%d", portDec)
+	return int(portDec)
 }
 
-func convertState(stateHex string) string {
-	stateDec, err := strconv.ParseInt(stateHex, 16, 0)
-	if err != nil {
-		log.Fatal(err)
-	}
-	if stateDec-1 < int64(0) || stateDec-1 > int64(len(states)) {
-		log.Fatal(fmt.Sprintf("unknown state: %d", stateDec))
-	}
-	return states[stateDec-1]
-}
-
-func findPidsAndProgramnames(rows []row) map[string]string {
+func findPidsAndProgramNames(rows []row) map[string]pidAndProgramName {
 	procDir := "/proc"
 	inodes := map[string]bool{}
 	for _, r := range rows {
 		inodes[r.inode] = true
 	}
-	inodePidProgramnameMapping := map[string]string{}
+	inodePidProgramnameMapping := map[string]pidAndProgramName{}
 	inodeRegexp := regexp.MustCompile(`socket:\[([^\]]*)\]`)
 
 	files, err := ioutil.ReadDir(procDir)
@@ -124,7 +77,7 @@ func findPidsAndProgramnames(rows []row) map[string]string {
 			}
 			inodeRegexpMatches := inodeRegexp.FindStringSubmatch(dest)
 			if len(inodeRegexpMatches) >= 1 && inodes[inodeRegexpMatches[1]] {
-				inodePidProgramnameMapping[inodeRegexpMatches[1]] = dir.Name() + "/" + string(processName)
+				inodePidProgramnameMapping[inodeRegexpMatches[1]] = pidAndProgramName{pid: dir.Name(), programName: string(processName)}
 				if len(inodePidProgramnameMapping) == len(rows) {
 					return inodePidProgramnameMapping
 				}
@@ -154,22 +107,6 @@ func createUidUsernameMapping() map[string]string {
 	return uidUsernameMapping
 }
 
-func convertAddressIpV6(addressHex string) string {
-	var result []string
-	for i := 0; i < 4; i++ {
-		addressPart := addressHex[i*8 : (i+1)*8]
-		var subresult string
-		for j := 0; j < 4; j++ {
-			subresult = subresult + addressPart[6-j*2:8-j*2]
-			if j == 1 {
-				subresult = subresult + ":"
-			}
-		}
-		result = append(result, subresult)
-	}
-	return "[" + net.ParseIP(strings.Join(result, ":")).String() + "]"
-}
-
 func scanProcFile(proto string, rows *[]row, table *uitable.Table) {
 	file, err := os.Open("/proc/net/" + proto)
 	if err != nil {
@@ -183,9 +120,6 @@ func scanProcFile(proto string, rows *[]row, table *uitable.Table) {
 		log.Fatal(err)
 	}
 
-	udpRegexp := regexp.MustCompile(`udp.*`)
-	ipV6Regexp := regexp.MustCompile(`.*6`)
-
 	for scanner.Scan() {
 		if err := scanner.Err(); err != nil {
 			log.Fatal(err)
@@ -193,67 +127,60 @@ func scanProcFile(proto string, rows *[]row, table *uitable.Table) {
 		line := scanner.Text()
 		fields := strings.Fields(line)
 
-		localAddressAndPortHex := strings.Split(fields[1], ":")
-		var localAddress string
-		if ipV6Regexp.MatchString(proto) {
-			localAddress = convertAddressIpV6(localAddressAndPortHex[0])
-		} else {
-			localAddress = convertAddressIpV4(localAddressAndPortHex[0])
-		}
-		localPort := convertPort(localAddressAndPortHex[1])
-
-		remoteAddressAndPortHex := strings.Split(fields[2], ":")
-		var remoteAddress string
-		if ipV6Regexp.MatchString(proto) {
-			remoteAddress = convertAddressIpV6(remoteAddressAndPortHex[0])
-		} else {
-			remoteAddress = convertAddressIpV4(remoteAddressAndPortHex[0])
-		}
-		remotePort := convertPort(remoteAddressAndPortHex[1])
-
-		var state string
-		if udpRegexp.MatchString(proto) {
-			state = "-"
-		} else {
-			state = convertState(fields[3])
-		}
+		addressAndPortHex := strings.Split(fields[1], ":")
+		port := convertPort(addressAndPortHex[1])
 
 		uid := fields[7]
 		inode := fields[9]
 
 		*rows = append(*rows, row{
-			proto:  proto,
-			local:  localAddress + ":" + localPort,
-			remote: remoteAddress + ":" + remotePort,
-			state:  state,
-			uid:    uid,
-			inode:  inode,
+			proto: proto,
+			port:  port,
+			uid:   uid,
+			inode: inode,
 		})
 	}
 }
 
 func main() {
 	table := uitable.New()
-	table.AddRow("#", "Proto", "Local Address", "Foreign Address", "State", "UID/Username", "PID/Programname")
+	table.AddRow("Port", "Proto", "Username", "PID", "Program name")
 	rows := []row{}
 	scanProcFile("tcp", &rows, table)
 	scanProcFile("tcp6", &rows, table)
 	scanProcFile("udp", &rows, table)
 	scanProcFile("udp6", &rows, table)
 
-	inodePidProgramnameMapping := findPidsAndProgramnames(rows)
+	inodePidProgramnameMapping := findPidsAndProgramNames(rows)
 	uidUsernameMapping := createUidUsernameMapping()
 
-	for i, r := range rows {
+	sort.Slice(rows, func(i, j int) bool { return rows[i].port < rows[j].port })
+
+	var lastSeenPort int
+
+	for i := 0; i < len(rows); i++ {
+		r := rows[i]
 		username := uidUsernameMapping[r.uid]
 		if username == "" {
 			panic("unknown uid: " + r.uid)
 		}
-		pidAndProgramname := inodePidProgramnameMapping[r.inode]
-		if pidAndProgramname == "" {
-			pidAndProgramname = "-"
+		pidAndProgramName := inodePidProgramnameMapping[r.inode]
+		if pidAndProgramName.pid == "" {
+			pidAndProgramName.pid = "-"
+			pidAndProgramName.programName = "-"
 		}
-		table.AddRow(i+1, r.proto, r.local, r.remote, r.state, r.uid+"/"+username, pidAndProgramname)
+		var portCell string
+		if r.port == lastSeenPort {
+			if i < len(rows)-1 && rows[i+1].port == r.port {
+				portCell = "├"
+			} else {
+				portCell = "└"
+			}
+		} else {
+			portCell = strconv.Itoa(r.port)
+		}
+		lastSeenPort = r.port
+		table.AddRow(portCell, r.proto, username, pidAndProgramName.pid, pidAndProgramName.programName)
 	}
 
 	fmt.Println(table)
