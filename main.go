@@ -6,6 +6,7 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"os/user"
 	"regexp"
 	"sort"
 	"strconv"
@@ -162,6 +163,13 @@ func uniqueRows(rows []row, inodePidProgramnameMapping map[string]pidAndProgramN
 }
 
 func main() {
+	currentUser, err := user.Current()
+	if err != nil {
+		panic("cannot identify current user")
+	}
+	if currentUser.Uid != "0" {
+		fmt.Println("Not all processes could be identified, non-owned process info will not be shown, you would have to be root to see it all.")
+	}
 	table := uitable.New()
 	table.AddRow("Port", "Proto", "Username", "PID", "Program name")
 	rows := []row{}
