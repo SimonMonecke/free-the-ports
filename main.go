@@ -142,6 +142,25 @@ func scanProcFile(proto string, rows *[]row, table *uitable.Table) {
 	}
 }
 
+func uniqueRows(rows []row, inodePidProgramnameMapping map[string]pidAndProgramName) []row {
+	uRows := rows[:0]
+	for i := 0; i < len(rows); i++ {
+		currentPid := inodePidProgramnameMapping[rows[i].inode].pid
+		foundSameEntry := false
+		for j := 0; j < i; j++ {
+			otherPid := inodePidProgramnameMapping[rows[j].inode].pid
+			if currentPid != "" && currentPid == otherPid && rows[j].port == rows[i].port && rows[j].proto == rows[i].proto {
+				foundSameEntry = true
+				break
+			}
+		}
+		if !foundSameEntry {
+			uRows = append(uRows, rows[i])
+		}
+	}
+	return uRows
+}
+
 func main() {
 	table := uitable.New()
 	table.AddRow("Port", "Proto", "Username", "PID", "Program name")
@@ -153,6 +172,8 @@ func main() {
 
 	inodePidProgramnameMapping := findPidsAndProgramNames(rows)
 	uidUsernameMapping := createUidUsernameMapping()
+
+	rows = uniqueRows(rows, inodePidProgramnameMapping)
 
 	sort.Slice(rows, func(i, j int) bool { return rows[i].port < rows[j].port })
 
