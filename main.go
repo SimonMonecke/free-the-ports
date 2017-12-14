@@ -213,4 +213,37 @@ func main() {
 	}
 
 	fmt.Println(table)
+
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Print("Free the port: ")
+	text, _ := reader.ReadString('\n')
+	port, err := strconv.Atoi(strings.Replace(text, "\n", "", -1))
+	if err != nil {
+		log.Fatal(err)
+	}
+	filteredPidsAndProgramNames := []pidAndProgramName{}
+	for _, r := range rows {
+		pidAndProgramNameEntry := inodePidProgramnameMapping[r.inode]
+		if r.port == port && pidAndProgramNameEntry.pid != "" {
+			filteredPidsAndProgramNames = append(filteredPidsAndProgramNames, pidAndProgramNameEntry)
+		}
+	}
+	if len(filteredPidsAndProgramNames) == 0 {
+		fmt.Printf("No killable process is running on port %d\n", port)
+	}
+	for _, p := range filteredPidsAndProgramNames {
+		pidAsInt, err := strconv.Atoi(p.pid)
+		if err != nil {
+			panic(err)
+		}
+		process, err := os.FindProcess(pidAsInt)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Printf("Send SIGTERM to %s - %d\n", p.programName, pidAsInt)
+		err = process.Signal(os.Interrupt)
+		if err != nil {
+			panic(err)
+		}
+	}
 }
