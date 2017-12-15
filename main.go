@@ -15,15 +15,17 @@ import (
 	"github.com/gosuri/uitable"
 )
 
-type row struct {
-	proto string
-	port  int
-	uid   string
-	inode string
+type runningProcess struct {
+	proto       string
+	port        int
+	uid         string
+	inode       string
+	pid         int
+	programName string
 }
 
 type pidAndProgramName struct {
-	pid         string
+	pid         int
 	programName string
 }
 
@@ -35,7 +37,7 @@ func convertPort(portHex string) int {
 	return int(portDec)
 }
 
-func findPidsAndProgramNames(rows []row) map[string]pidAndProgramName {
+func findPidsAndProgramNames(rows []runningProcess) map[string]pidAndProgramName {
 	procDir := "/proc"
 	inodes := map[string]bool{}
 	for _, r := range rows {
@@ -78,7 +80,11 @@ func findPidsAndProgramNames(rows []row) map[string]pidAndProgramName {
 			}
 			inodeRegexpMatches := inodeRegexp.FindStringSubmatch(dest)
 			if len(inodeRegexpMatches) >= 1 && inodes[inodeRegexpMatches[1]] {
-				inodePidProgramnameMapping[inodeRegexpMatches[1]] = pidAndProgramName{pid: dir.Name(), programName: string(processName)}
+				pid, err := strconv.Atoi(dir.Name())
+				if err != nil {
+					panic(err)
+				}
+				inodePidProgramnameMapping[inodeRegexpMatches[1]] = pidAndProgramName{pid: pid, programName: string(processName)}
 				if len(inodePidProgramnameMapping) == len(rows) {
 					return inodePidProgramnameMapping
 				}
@@ -108,7 +114,7 @@ func createUidUsernameMapping() map[string]string {
 	return uidUsernameMapping
 }
 
-func scanProcFile(proto string, rows *[]row, table *uitable.Table) {
+func scanProcFile(proto string, rows *[]runningProcess) {
 	file, err := os.Open("/proc/net/" + proto)
 	if err != nil {
 		log.Fatal(err)
@@ -134,7 +140,7 @@ func scanProcFile(proto string, rows *[]row, table *uitable.Table) {
 		uid := fields[7]
 		inode := fields[9]
 
-		*rows = append(*rows, row{
+		*rows = append(*rows, runningProcess{
 			proto: proto,
 			port:  port,
 			uid:   uid,
@@ -143,14 +149,12 @@ func scanProcFile(proto string, rows *[]row, table *uitable.Table) {
 	}
 }
 
-func uniqueRows(rows []row, inodePidProgramnameMapping map[string]pidAndProgramName) []row {
+func filterDuplicateEntries(rows []runningProcess) []runningProcess {
 	uRows := rows[:0]
 	for i := 0; i < len(rows); i++ {
-		currentPid := inodePidProgramnameMapping[rows[i].inode].pid
 		foundSameEntry := false
 		for j := 0; j < i; j++ {
-			otherPid := inodePidProgramnameMapping[rows[j].inode].pid
-			if currentPid != "" && currentPid == otherPid && rows[j].port == rows[i].port && rows[j].proto == rows[i].proto {
+			if rows[i].pid != 0 && rows[i].pid == rows[j].pid && rows[j].port == rows[i].port && rows[j].proto == rows[i].proto {
 				foundSameEntry = true
 				break
 			}
@@ -162,7 +166,7 @@ func uniqueRows(rows []row, inodePidProgramnameMapping map[string]pidAndProgramN
 	return uRows
 }
 
-func main() {
+func printWarningIfRunningAsNonRoot() *user.User {
 	currentUser, err := user.Current()
 	if err != nil {
 		panic("cannot identify current user")
@@ -170,37 +174,50 @@ func main() {
 	if currentUser.Uid != "0" {
 		fmt.Println("Not all processes could be identified, non-owned process info will not be shown, you would have to be root to see it all.")
 	}
+	return currentUser
+}
+
+func getRunningProcesses() []runningProcess {
+	runningProcesses := []runningProcess{}
+	scanProcFile("tcp", &runningProcesses)
+	scanProcFile("tcp6", &runningProcesses)
+	scanProcFile("udp", &runningProcesses)
+	scanProcFile("udp6", &runningProcesses)
+
+	inodePidProgramnameMapping := findPidsAndProgramNames(runningProcesses)
+	runningProcessesWithPidAndProgramNames := runningProcesses[:0]
+	for _, process := range runningProcesses {
+		if pidAndProgramNameEntry, ok := inodePidProgramnameMapping[process.inode]; ok {
+			process.pid = pidAndProgramNameEntry.pid
+			process.programName = pidAndProgramNameEntry.programName
+		}
+		runningProcessesWithPidAndProgramNames = append(runningProcessesWithPidAndProgramNames, process)
+	}
+	uniqRunningProcesses := filterDuplicateEntries(runningProcesses)
+	sort.Slice(uniqRunningProcesses, func(i, j int) bool { return uniqRunningProcesses[i].port < uniqRunningProcesses[j].port })
+	return uniqRunningProcesses
+
+}
+
+func printRunningProcessesTable(runningProcesses []runningProcess) {
 	table := uitable.New()
 	table.AddRow("Port", "Proto", "Username", "PID", "Program name")
-	rows := []row{}
-	scanProcFile("tcp", &rows, table)
-	scanProcFile("tcp6", &rows, table)
-	scanProcFile("udp", &rows, table)
-	scanProcFile("udp6", &rows, table)
-
-	inodePidProgramnameMapping := findPidsAndProgramNames(rows)
 	uidUsernameMapping := createUidUsernameMapping()
 
-	rows = uniqueRows(rows, inodePidProgramnameMapping)
-
-	sort.Slice(rows, func(i, j int) bool { return rows[i].port < rows[j].port })
-
 	var lastSeenPort int
-
-	for i := 0; i < len(rows); i++ {
-		r := rows[i]
+	for i := 0; i < len(runningProcesses); i++ {
+		r := runningProcesses[i]
 		username := uidUsernameMapping[r.uid]
 		if username == "" {
 			panic("unknown uid: " + r.uid)
 		}
-		pidAndProgramName := inodePidProgramnameMapping[r.inode]
-		if pidAndProgramName.pid == "" {
-			pidAndProgramName.pid = "-"
-			pidAndProgramName.programName = "-"
+		pidAsString := "-"
+		if runningProcesses[i].pid != 0 {
+			pidAsString = strconv.Itoa(runningProcesses[i].pid)
 		}
 		var portCell string
 		if r.port == lastSeenPort {
-			if i < len(rows)-1 && rows[i+1].port == r.port {
+			if i < len(runningProcesses)-1 && runningProcesses[i+1].port == r.port {
 				portCell = "├"
 			} else {
 				portCell = "└"
@@ -209,41 +226,57 @@ func main() {
 			portCell = strconv.Itoa(r.port)
 		}
 		lastSeenPort = r.port
-		table.AddRow(portCell, r.proto, username, pidAndProgramName.pid, pidAndProgramName.programName)
+		table.AddRow(portCell, r.proto, username, pidAsString, runningProcesses[i].programName)
 	}
 
 	fmt.Println(table)
+}
 
+func sendSigtermToRunningProcessesOnPort(runningProcesses []runningProcess, port int) {
+	filteredRunningProcesses := []runningProcess{}
+	for _, r := range runningProcesses {
+		if r.port == port && r.pid != 0 {
+			filteredRunningProcesses = append(filteredRunningProcesses, r)
+		}
+	}
+	if len(filteredRunningProcesses) == 0 {
+		fmt.Printf("No killable process is running on port %d\n", port)
+	}
+
+	for _, process := range filteredRunningProcesses {
+		processInstance, err := os.FindProcess(process.pid)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Printf("Send SIGTERM to %s - %d\n", process.programName, process.pid)
+		err = processInstance.Signal(os.Interrupt)
+		if err != nil {
+			panic(err)
+		}
+	}
+}
+
+func readPortToBeFreed() int {
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Print("Free the port: ")
 	text, _ := reader.ReadString('\n')
-	port, err := strconv.Atoi(strings.Replace(text, "\n", "", -1))
+	textWithoutNewLine := strings.Replace(text, "\n", "", -1)
+	port, err := strconv.Atoi(textWithoutNewLine)
 	if err != nil {
-		log.Fatal(err)
+		fmt.Printf("\"%s\" is no valid port\n", textWithoutNewLine)
+		os.Exit(1)
 	}
-	filteredPidsAndProgramNames := []pidAndProgramName{}
-	for _, r := range rows {
-		pidAndProgramNameEntry := inodePidProgramnameMapping[r.inode]
-		if r.port == port && pidAndProgramNameEntry.pid != "" {
-			filteredPidsAndProgramNames = append(filteredPidsAndProgramNames, pidAndProgramNameEntry)
-		}
-	}
-	if len(filteredPidsAndProgramNames) == 0 {
-		fmt.Printf("No killable process is running on port %d\n", port)
-	}
-	for _, p := range filteredPidsAndProgramNames {
-		pidAsInt, err := strconv.Atoi(p.pid)
-		if err != nil {
-			panic(err)
-		}
-		process, err := os.FindProcess(pidAsInt)
-		if err != nil {
-			panic(err)
-		}
-		fmt.Printf("Send SIGTERM to %s - %d\n", p.programName, pidAsInt)
-		err = process.Signal(os.Interrupt)
-		if err != nil {
-			panic(err)
-		}
-	}
+	return port
+}
+
+func main() {
+	printWarningIfRunningAsNonRoot()
+
+	runningProcesses := getRunningProcesses()
+
+	printRunningProcessesTable(runningProcesses)
+
+	port := readPortToBeFreed()
+
+	sendSigtermToRunningProcessesOnPort(runningProcesses, port)
 }
