@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/fatih/color"
 	"github.com/gosuri/uitable"
 )
 
@@ -256,27 +257,58 @@ func sendSigtermToRunningProcessesOnPort(runningProcesses []runningProcess, port
 	}
 }
 
-func readPortToBeFreed() int {
-	reader := bufio.NewReader(os.Stdin)
-	fmt.Print("Free the port: ")
-	text, _ := reader.ReadString('\n')
-	textWithoutNewLine := strings.Replace(text, "\n", "", -1)
-	port, err := strconv.Atoi(textWithoutNewLine)
+func parsePort(portAsString string) int {
+	port, err := strconv.Atoi(portAsString)
 	if err != nil {
-		fmt.Printf("\"%s\" is no valid port\n", textWithoutNewLine)
+		fmt.Printf("\"%s\" is no valid port\n", portAsString)
 		os.Exit(1)
 	}
 	return port
 }
 
+func readPortToBeFreed() int {
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Print("Free the port: ")
+	text, _ := reader.ReadString('\n')
+	textWithoutNewLine := strings.Replace(text, "\n", "", -1)
+	return parsePort(textWithoutNewLine)
+}
+
+func printUsage() {
+	headlines := color.New(color.FgWhite).Add(color.Underline)
+	headlines.Println("free-the-ports")
+	fmt.Println("\n  Let you kill processes running on a specific port\n")
+	headlines.Println("SYNOPSIS")
+	fmt.Println("\n  $ free-the-ports [PORT]\n")
+	headlines.Println("PORT")
+	fmt.Println("\n  Specify a port to kill processes running on it and to skip the interactive mode")
+}
+
+func validateCmdArgs(args []string) {
+	if len(args) > 1 {
+		printUsage()
+		os.Exit(1)
+	}
+}
+
+func isInteractiveMode(args []string) bool {
+	return len(args) == 0
+}
+
 func main() {
-	printWarningIfRunningAsNonRoot()
+	args := os.Args[1:]
+	validateCmdArgs(args)
 
 	runningProcesses := getRunningProcesses()
 
-	printRunningProcessesTable(runningProcesses)
-
-	port := readPortToBeFreed()
+	var port int
+	if isInteractiveMode(args) {
+		printWarningIfRunningAsNonRoot()
+		printRunningProcessesTable(runningProcesses)
+		port = readPortToBeFreed()
+	} else {
+		port = parsePort(args[0])
+	}
 
 	sendSigtermToRunningProcessesOnPort(runningProcesses, port)
 }
